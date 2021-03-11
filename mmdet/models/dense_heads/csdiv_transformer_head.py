@@ -1,3 +1,4 @@
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -267,27 +268,33 @@ class CSDivTransformerHead(AnchorFreeHead):
         num_dec_layers = len(all_cls_scores)
         all_gt_bboxes_list = [gt_bboxes_list for _ in range(num_dec_layers)]
         all_gt_labels_list = [gt_labels_list for _ in range(num_dec_layers)]
-        all_gt_bboxes_ignore_list = [gt_bboxes_ignore for _ in range(num_dec_layers)]
+        # all_gt_bboxes_ignore_list = [gt_bboxes_ignore for _ in range(num_dec_layers)]
         img_metas_list = [img_metas for _ in range(num_dec_layers)]
 
-        losses_cs = multi_apply(
-            self.loss_single,
-            all_cls_scores,
-            all_bbox_preds,
-            all_gt_bboxes_list,
-            all_gt_labels_list,
-            img_metas_list,
-            all_gt_bboxes_ignore_list,
+        # losses_cs = multi_apply(
+        #     self.loss_single,
+        #     all_cls_scores,
+        #     all_bbox_preds,
+        #     all_gt_bboxes_list,
+        #     all_gt_labels_list,
+        #     img_metas_list,
+        # )
+        losses_cs = self.loss_single(
+            all_cls_scores[-1],
+            all_bbox_preds[-1],
+            gt_bboxes_list,
+            gt_labels_list,
+            img_metas,
         )
 
         loss_dict = dict()
         # loss from the last decoder layer
-        loss_dict["loss_cs"] = losses_cs[-1]
+        loss_dict["loss_cs"] = losses_cs
         # loss from other decoder layers
-        num_dec_layer = 0
-        for loss_cs_i in losses_cs[:-1]:
-            loss_dict[f"d{num_dec_layer}.loss_cs"] = loss_cs_i
-            num_dec_layer += 1
+        # num_dec_layer = 0
+        # for loss_cs_i in losses_cs[:-1]:
+        #     loss_dict[f"d{num_dec_layer}.loss_cs"] = loss_cs_i
+        #     num_dec_layer += 1
         return loss_dict
 
     def loss_single(
@@ -297,7 +304,6 @@ class CSDivTransformerHead(AnchorFreeHead):
         gt_bboxes_list,
         gt_labels_list,
         img_metas,
-        gt_bboxes_ignore_list=None,
     ):
         """ "Loss function for outputs from a single decoder layer of a single
         feature level.
@@ -332,7 +338,6 @@ class CSDivTransformerHead(AnchorFreeHead):
             )
             factors.append(factor)
         factors = torch.stack(factors, 0)
-
         bbox_preds = bbox_preds / factors
 
         bbox_preds = bbox_xyxy_to_cxcywh(bbox_preds.view(-1, 4)).view(num_imgs, -1, 4)
@@ -351,6 +356,8 @@ class CSDivTransformerHead(AnchorFreeHead):
         # bbox_preds [bs, Kp, 4]
         # gt_bboxes_list [list([Kg, 4])]
         # gt_labels_list [list([Kg])]
+        # tic = time.time()
+        # print(f"tic: {tic}")
         loss_cs = self.loss_cs(
             bbox_preds,
             cls_scores,
@@ -358,6 +365,8 @@ class CSDivTransformerHead(AnchorFreeHead):
             gt_labels_list,
             avg_factor=num_imgs,
         )
+        # toc = time.time()
+        # print(f"toc: {toc}, diff: {toc -tic}")
 
         return loss_cs
 

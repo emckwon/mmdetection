@@ -66,6 +66,59 @@ def log_gaussian_mixture_cs_divergence(
     return 2 * torch.log(pq) - torch.log(pp) - torch.log(qq)
 
 
+def get_total_gaussian_delta(m_p, cov_p, m_q, cov_q, x_dim):
+    # m_p, m_q : (kp, x_dim), (kq, x_dim)
+    # cov_p, cov_q : (kp, x_dim, x_dim), (kq, x_dim, x_dim)
+
+    cov_inv_p = torch.inverse(cov_p)  # (kp, x_dim, x_dim)
+    cov_inv_q = torch.inverse(cov_q)  # (kq, x_dim, x_dim)
+
+    cov_inv_pq = cov_inv_p.unsqueeze(1) + cov_inv_q.unsqueeze(
+        0
+    )  # (kp, kq, x_dim, x_dim)
+    cov_pq = torch.inverse(cov_inv_pq)  # (kp, kq, x_dim, x_dim)
+
+    cov_inv_p_m_p = torch.einsum("pij,pj->pi", cov_inv_p, m_p)  # (kp, x_dim)
+    cov_inv_q_m_q = torch.einsum("pij,pj->pi", cov_inv_q, m_q)  # (kq, x_dim)
+
+    m_pq = torch.einsum(
+        "pqij,pqj->pqi", cov_pq, cov_inv_p_m_p.unsqueeze(1) + cov_inv_q_m_q.unsqueeze(0)
+    )  # (kp, kq, x_dim)
+
+    first_term = torch.einsum("pqij,pqj->pqi", cov_inv_pq, m_pq)  # (kp, kq, x_dim)
+    first_term = torch.einsum("pqi,pqi->pq", m_pq, first_term)  # (kp, kq)
+    second_term = -torch.einsum("pi,pi->p", m_p, cov_inv_p_m_p).unsqueeze(
+        1
+    ) - torch.einsum("qi,qi->q", m_q, cov_inv_q_m_q).unsqueeze(
+        0
+    )  # (kp, kq)
+    third_term = -torch.log(
+        torch.det(cov_inv_pq)
+        / torch.einsum("p,q->pq", torch.det(cov_inv_p), torch.det(cov_inv_q))
+    )  # (kp, kq)
+    fourth_term = -x_dim * torch.log(torch.Tensor([2 * math.pi]).to(m_p))
+    # print(f"1 {first_term}, 2: {second_term}, 3: {third_term}")
+    return 0.5 * (first_term + second_term + third_term + fourth_term)  # (kp, kq)
+
+
+def get_total_gaussian_mixture_log_cs_divergence(
+    p_mean, p_cov, p_alpha, q_mean, q_cov, q_alpha, x_dim
+):
+    pq_weight = torch.einsum("pi,qi->pq", p_alpha, q_alpha)
+    pq = pq_weight * torch.exp(
+        get_total_gaussian_delta(p_mean, p_cov, q_mean, q_cov, x_dim)
+    )
+    pp_weight = torch.einsum("pi,qi->pq", p_alpha, p_alpha)
+    pp = pp_weight * torch.exp(
+        get_total_gaussian_delta(p_mean, p_cov, p_mean, p_cov, x_dim)
+    )
+    qq_weight = torch.einsum("pi,qi->pq", q_alpha, q_alpha)
+    qq = qq_weight * torch.exp(
+        get_total_gaussian_delta(q_mean, q_cov, q_mean, q_cov, x_dim)
+    )
+    return 2 * torch.log(pq.sum()) - torch.log(pp.sum()) - torch.log(qq.sum())
+
+
 @LOSSES.register_module()
 class CSDivergenceLoss(nn.Module):
     """CS Divergence Loss.
@@ -147,7 +200,7 @@ class CSDivergenceLoss(nn.Module):
 
         loss = 0
         for i in range(bs):
-            loss -= log_gaussian_mixture_cs_divergence(
+            i_loss = get_total_gaussian_mixture_log_cs_divergence(
                 gt_mean_list[i],
                 gt_cov_list[i],
                 gt_alpha_list[i],
@@ -156,7 +209,7 @@ class CSDivergenceLoss(nn.Module):
                 pred_alpha_list[i],
                 x_dim=2,
             )
-
+            loss -= i_loss
         if avg_factor is not None:
             loss = loss / avg_factor
 
